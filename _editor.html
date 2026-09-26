@@ -1,0 +1,469 @@
+<!doctype html>
+<!--
+  Local text editor for simonkalouche.com.
+  Open this file in Chrome (or Edge / Arc), choose the website folder, click any
+  text to edit it, and press Save (or Cmd+S). Changes are written straight into
+  the page's HTML file. The leading underscore keeps this file off the live site
+  (GitHub Pages skips files that start with "_").
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Website Editor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #f4f4f2; --panel: #fff; --ink: #111; --muted: #6b6b6b; --line: #e2e2de;
+    --accent: #1772d0; --changed: #fff4c2; --ok: #00873e; --err: #c62828;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; flex-direction: column;
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink); background: var(--bg);
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
+  button, select {
+    font: inherit; height: 32px; padding: 0 12px; border-radius: 6px;
+    border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer;
+  }
+  button:hover:not(:disabled), select:hover { border-color: #bdbdb8; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.fmt { width: 32px; padding: 0; }
+  .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  .spacer { flex: 1; }
+  #status { color: var(--muted); min-width: 0; }
+  #status.ok { color: var(--ok); } #status.err { color: var(--err); }
+
+  #meta { background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 16px; }
+  #meta summary { cursor: pointer; padding: 8px 0; color: var(--muted); }
+  #meta .grid { display: grid; grid-template-columns: 150px 1fr; gap: 6px 12px; padding: 0 0 12px; align-items: start; }
+  #meta label { color: var(--muted); padding-top: 6px; font-size: 13px; }
+  #meta textarea {
+    font: inherit; width: 100%; padding: 5px 8px; border: 1px solid var(--line);
+    border-radius: 6px; resize: vertical; min-height: 32px;
+  }
+  #meta textarea.changed { background: var(--changed); }
+
+  main { flex: 1; position: relative; min-height: 0; }
+  iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block; }
+  #empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    text-align: center; color: var(--muted); padding: 24px;
+  }
+  #empty[hidden] { display: none; }
+  #empty div { max-width: 460px; }
+  #empty h2 { color: var(--ink); font-size: 18px; margin: 0 0 8px; }
+  @media (max-width: 640px) {
+    #meta .grid { grid-template-columns: 1fr; }
+    #meta label { padding-top: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Website Editor</h1>
+  <button id="pick" class="primary">Choose website folder</button>
+  <select id="pages" disabled></select>
+  <span class="sep"></span>
+  <button class="fmt" data-cmd="bold" title="Bold (Cmd+B)" disabled><b>B</b></button>
+  <button class="fmt" data-cmd="italic" title="Italic (Cmd+I)" disabled><i>I</i></button>
+  <button class="fmt" data-cmd="link" title="Make selected text a link" disabled>🔗</button>
+  <button class="fmt" data-cmd="unlink" title="Remove link" disabled>⛓︎</button>
+  <span class="sep"></span>
+  <button id="discard" disabled>Discard changes</button>
+  <button id="save" class="primary" disabled>Save</button>
+  <span id="status"></span>
+</header>
+
+<details id="meta" hidden>
+  <summary>Page title &amp; search/share descriptions</summary>
+  <div class="grid" id="metaGrid"></div>
+</details>
+
+<main>
+  <iframe id="frame" title="Page being edited"></iframe>
+  <div id="empty"><div>
+    <h2>Edit your website's text</h2>
+    <p>Click <b>Choose website folder</b> and pick the <code>simon-kalouche-website</code> folder.
+       Then click any text on the page to change it and press <b>Save</b> (or Cmd+S).</p>
+    <p>Enter does nothing (so paragraphs stay intact); use Shift+Enter for a line break.
+       Edited text is highlighted in yellow until you save.</p>
+    <p id="unsupported" hidden style="color:var(--err)">This browser can't save files directly.
+       Open this file in Chrome, Edge or Arc instead.</p>
+  </div></div>
+</main>
+
+<script>
+(function () {
+  // Elements whose text can be edited. Only the outermost match is editable,
+  // so nested matches (e.g. a <p> inside an <li>) are edited as part of their parent.
+  var EDITABLE = 'h1,h2,h3,h4,p,li,td,th,blockquote,figcaption,footer,' +
+                 '.ptitle,.authors,.venue,.award,.blog-title,.blog-subtitle,.caption,.tabs a';
+  var SKIP = '.twitter-tweet, script, style';
+  var META = [
+    { key: 'title',               label: 'Browser tab title' },
+    { key: 'description',         label: 'Google description' },
+    { key: 'og:title',            label: 'Share title (LinkedIn, iMessage…)' },
+    { key: 'og:description',      label: 'Share description' },
+    { key: 'twitter:title',       label: 'X / Twitter title' },
+    { key: 'twitter:description', label: 'X / Twitter description' }
+  ];
+  var EDITOR_CSS = [
+    '.hidden { display: block !important; }',
+    '.blog-body { max-height: none !important; }',
+    '.section { border-top: 1px dashed #ccc; margin-top: 36px; padding-top: 4px; }',
+    '.section::before { content: "Tab: " attr(id); display: block; font: 12px -apple-system, sans-serif;',
+    '  text-transform: uppercase; letter-spacing: .06em; color: #999; }',
+    '[data-ed] { border-radius: 2px; outline-offset: 2px; }',
+    '[data-ed]:hover { outline: 1px dashed #8fb8e8; cursor: text; }',
+    '[data-ed]:focus { outline: 2px solid #1772d0; }',
+    '[data-ed].ed-changed { background: #fff4c2; }'
+  ].join('\n');
+
+  var $ = function (id) { return document.getElementById(id); };
+  var frame = $('frame'), pagesSel = $('pages'), statusEl = $('status');
+  var root = null;          // FileSystemDirectoryHandle for the website folder
+  var page = null;          // { path, source, pristine, edits: [{el, orig}], meta: {} }
+
+  function setStatus(msg, cls) { statusEl.textContent = msg || ''; statusEl.className = cls || ''; }
+
+  if (!window.showDirectoryPicker) {
+    $('unsupported').hidden = false;
+    $('pick').disabled = true;
+  }
+
+  // ---------- remember the chosen folder between visits ----------
+  function idb(mode, fn) {
+    return new Promise(function (resolve, reject) {
+      var req = indexedDB.open('site-editor', 1);
+      req.onupgradeneeded = function () { req.result.createObjectStore('kv'); };
+      req.onerror = function () { reject(req.error); };
+      req.onsuccess = function () {
+        var tx = req.result.transaction('kv', mode);
+        var r = fn(tx.objectStore('kv'));
+        tx.oncomplete = function () { resolve(r && r.result); };
+        tx.onerror = function () { reject(tx.error); };
+      };
+    });
+  }
+  var savedHandle = null;
+  idb('readonly', function (s) { return s.get('root'); }).then(function (h) {
+    if (h) { savedHandle = h; $('pick').textContent = 'Open ' + h.name; }
+  }).catch(function () {});
+
+  $('pick').onclick = async function () {
+    try {
+      var h = null;
+      if (savedHandle && (await savedHandle.requestPermission({ mode: 'readwrite' })) === 'granted') {
+        h = savedHandle;
+      } else {
+        h = await window.showDirectoryPicker({ id: 'site', mode: 'readwrite' });
+      }
+      await openRoot(h);
+      idb('readwrite', function (s) { return s.put(h, 'root'); }).catch(function () {});
+    } catch (e) {
+      if (e.name !== 'AbortError') setStatus(e.message, 'err');
+    }
+  };
+
+  async function openRoot(h) {
+    try { await h.getFileHandle('index.html'); }
+    catch (e) { setStatus('That folder has no index.html — pick the website folder.', 'err'); return; }
+    root = h;
+    savedHandle = h;
+    $('pick').textContent = 'Folder: ' + h.name;
+    var paths = ['index.html'];
+    try {
+      var blog = await h.getDirectoryHandle('blog');
+      for await (var entry of blog.values()) {
+        if (entry.kind !== 'directory') continue;
+        try { await entry.getFileHandle('index.html'); paths.push('blog/' + entry.name + '/index.html'); }
+        catch (e) {}
+      }
+    } catch (e) {}
+    pagesSel.innerHTML = '';
+    paths.forEach(function (p) {
+      var o = document.createElement('option');
+      o.value = p;
+      o.textContent = p === 'index.html' ? 'Home page' : 'Blog: ' + p.split('/')[1];
+      pagesSel.appendChild(o);
+    });
+    pagesSel.disabled = false;
+    await loadPage(paths[0]);
+  }
+
+  pagesSel.onchange = async function () {
+    if (isDirty() && !confirm('You have unsaved changes on this page. Discard them?')) {
+      pagesSel.value = page.path; return;
+    }
+    await loadPage(pagesSel.value);
+  };
+
+  // ---------- file helpers ----------
+  async function fileHandle(path, create) {
+    var parts = path.split('/'), dir = root;
+    for (var i = 0; i < parts.length - 1; i++) dir = await dir.getDirectoryHandle(parts[i]);
+    return dir.getFileHandle(parts[parts.length - 1], { create: !!create });
+  }
+  async function readText(path) { return (await (await fileHandle(path)).getFile()).text(); }
+  async function writeText(path, text) {
+    var w = await (await fileHandle(path)).createWritable();
+    await w.write(text); await w.close();
+  }
+
+  // ---------- load a page into the editing frame ----------
+  function editablesIn(doc) {
+    return Array.prototype.filter.call(doc.body.querySelectorAll(EDITABLE), function (el) {
+      if (el.closest(SKIP)) return false;
+      var up = el.parentElement && el.parentElement.closest(EDITABLE);
+      return !up;
+    });
+  }
+
+  async function loadPage(path) {
+    setStatus('Loading…');
+    var source = await readText(path);
+    var pristine = new DOMParser().parseFromString(source, 'text/html');
+
+    // Build a display copy: no scripts, relative URLs resolved from the page's folder.
+    var display = new DOMParser().parseFromString(source, 'text/html');
+    display.querySelectorAll('script').forEach(function (s) { s.remove(); });
+    var dir = path.indexOf('/') === -1 ? '' : path.slice(0, path.lastIndexOf('/') + 1);
+    var base = display.createElement('base');
+    base.href = new URL(dir, location.href).href;
+    display.head.prepend(base);
+    var style = display.createElement('style');
+    style.textContent = EDITOR_CSS;
+    display.head.appendChild(style);
+
+    await new Promise(function (resolve) {
+      frame.onload = resolve;
+      frame.srcdoc = '<!doctype html>\n' + display.documentElement.outerHTML;
+    });
+
+    var doc = frame.contentDocument;
+    try { doc.execCommand('styleWithCSS', false, false); } catch (e) {}
+    var shown = editablesIn(doc), orig = editablesIn(pristine);
+    if (shown.length !== orig.length) { setStatus('Could not map this page for editing.', 'err'); return; }
+
+    page = { path: path, source: source, pristine: pristine, edits: [], meta: {} };
+    shown.forEach(function (el, i) {
+      el.setAttribute('contenteditable', 'true');
+      el.setAttribute('data-ed', '');
+      el.spellcheck = true;
+      page.edits.push({ el: el, twin: orig[i], orig: el.innerHTML });
+      el.addEventListener('input', function () {
+        el.classList.toggle('ed-changed', el.innerHTML !== page.edits[i].orig);
+        refreshDirty();
+      });
+    });
+
+    // Links shouldn't navigate while editing.
+    doc.addEventListener('click', function (e) {
+      if (e.target.closest && e.target.closest('a')) e.preventDefault();
+    }, true);
+    // Keep paragraphs intact: Enter is ignored, Shift+Enter adds a line break.
+    doc.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && e.target.closest && e.target.closest('[data-ed]')) {
+        e.preventDefault();
+        if (e.shiftKey) doc.execCommand('insertLineBreak');
+      }
+      onKey(e);
+    });
+    // Paste as plain text so formatting from other apps doesn't leak in.
+    doc.addEventListener('paste', function (e) {
+      e.preventDefault();
+      var t = (e.clipboardData || window.clipboardData).getData('text/plain').replace(/\s*\n\s*/g, ' ');
+      doc.execCommand('insertText', false, t);
+    });
+
+    buildMeta(pristine);
+    $('empty').hidden = true;
+    document.querySelectorAll('.fmt').forEach(function (b) { b.disabled = false; });
+    refreshDirty();
+    setStatus('Click any text to edit it.');
+  }
+
+  // ---------- title / meta description fields ----------
+  function metaValue(doc, key) {
+    if (key === 'title') return doc.title;
+    var m = doc.querySelector('meta[name="' + key + '"], meta[property="' + key + '"]');
+    return m ? m.getAttribute('content') : null;
+  }
+  function buildMeta(doc) {
+    var grid = $('metaGrid');
+    grid.innerHTML = '';
+    META.forEach(function (m) {
+      var v = metaValue(doc, m.key);
+      if (v === null) return;
+      var id = 'meta-' + m.key.replace(/\W/g, '-');
+      var label = document.createElement('label');
+      label.htmlFor = id; label.textContent = m.label;
+      var ta = document.createElement('textarea');
+      ta.id = id; ta.value = v; ta.rows = v.length > 90 ? 3 : 1;
+      ta.oninput = function () { ta.classList.toggle('changed', ta.value !== v); refreshDirty(); };
+      page.meta[m.key] = { orig: v, input: ta };
+      grid.appendChild(label); grid.appendChild(ta);
+    });
+    $('meta').hidden = false;
+  }
+
+  // ---------- dirty state ----------
+  function changedEdits() { return page ? page.edits.filter(function (e) { return e.el.innerHTML !== e.orig; }) : []; }
+  function changedMeta() {
+    if (!page) return [];
+    return Object.keys(page.meta).filter(function (k) { return page.meta[k].input.value !== page.meta[k].orig; });
+  }
+  function isDirty() { return changedEdits().length + changedMeta().length > 0; }
+  function refreshDirty() {
+    var n = changedEdits().length + changedMeta().length;
+    $('save').disabled = !n;
+    $('discard').disabled = !n;
+    $('save').textContent = n ? 'Save (' + n + ')' : 'Save';
+    if (n) setStatus('Unsaved changes');
+  }
+  // When you come back to this tab, pick up any changes made to the file elsewhere.
+  window.addEventListener('focus', async function () {
+    if (!page || isDirty()) return;
+    try { if ((await readText(page.path)) !== page.source) await loadPage(page.path); } catch (e) {}
+  });
+  window.addEventListener('beforeunload', function (e) { if (isDirty()) { e.preventDefault(); e.returnValue = ''; } });
+
+  $('discard').onclick = function () {
+    if (confirm('Throw away all unsaved changes on this page?')) loadPage(page.path);
+  };
+
+  // ---------- formatting ----------
+  document.querySelectorAll('.fmt').forEach(function (b) {
+    b.onmousedown = function (e) { e.preventDefault(); };   // keep the text selection
+    b.onclick = function () {
+      var doc = frame.contentDocument, cmd = b.dataset.cmd;
+      if (cmd === 'link') {
+        var sel = doc.getSelection();
+        if (!sel || sel.isCollapsed) { setStatus('Select some text first, then click 🔗.', 'err'); return; }
+        var url = prompt('Link address (e.g. https://…)');
+        if (!url) return;
+        doc.execCommand('createLink', false, url.trim());
+        doc.querySelectorAll('a[href="' + CSS.escape(url.trim()) + '"]').forEach(function (a) {
+          if (/^https?:/.test(a.getAttribute('href')) && !a.target) { a.target = '_blank'; a.rel = 'noopener'; }
+        });
+      } else {
+        doc.execCommand(cmd);
+      }
+      var ed = doc.activeElement && doc.activeElement.closest('[data-ed]');
+      if (ed) ed.dispatchEvent(new Event('input'));
+    };
+  });
+
+  function onKey(e) {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      if (!$('save').disabled) save();
+    }
+  }
+  document.addEventListener('keydown', onKey);
+  $('save').onclick = save;
+
+  // ---------- save ----------
+  // Tidy what the browser produces while editing, and keep the element's original
+  // leading/trailing whitespace so the HTML file's line layout doesn't shift.
+  function cleanHTML(html, orig) {
+    html = html.replace(/(<br\s*\/?>\s*)+$/i, '')
+               .replace(/(^|[^\s;])&nbsp;(?=[^\s&]|$)/g, '$1 ');
+    var lead = orig.match(/^\s*/)[0], trail = orig.match(/\s*$/)[0];
+    return lead + html.trim() + trail;
+  }
+  function escapeAttr(s) { return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
+  function escapeText(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  function countOf(hay, needle) {
+    var n = 0, i = 0;
+    while ((i = hay.indexOf(needle, i)) !== -1) { n++; i += needle.length; }
+    return n;
+  }
+  // Replace exactly one occurrence of the old markup in the source text.
+  // Tries the browser's serialization first, then the common raw-"&" spelling.
+  function patchOnce(src, oldHTML, newHTML) {
+    var variants = [[oldHTML, newHTML]];
+    if (oldHTML.indexOf('&amp;') !== -1) variants.push([oldHTML.replace(/&amp;/g, '&'), newHTML.replace(/&amp;/g, '&')]);
+    for (var i = 0; i < variants.length; i++) {
+      if (countOf(src, variants[i][0]) === 1) return src.replace(variants[i][0], function () { return variants[i][1]; });
+    }
+    return null;
+  }
+
+  async function save() {
+    if (!page) return;
+    // Patch the file as it is on disk now, so changes made outside the editor
+    // (by hand or by Claude) since this page was opened aren't overwritten.
+    var src, fullRewrite = false;
+    try { src = await readText(page.path); }
+    catch (e) { setStatus('Save failed: ' + e.message, 'err'); return; }
+    var changedOnDisk = src !== page.source;
+
+    changedEdits().forEach(function (e) {
+      var html = cleanHTML(e.el.innerHTML, e.orig);
+      e.twin.innerHTML = html;
+      var next = patchOnce(src, e.orig, html);
+      if (next === null) fullRewrite = true; else src = next;
+    });
+
+    changedMeta().forEach(function (key) {
+      var v = page.meta[key].input.value.replace(/\s*\n\s*/g, ' ').trim();
+      var re = key === 'title'
+        ? /(<title>)([\s\S]*?)(<\/title>)/
+        : new RegExp('(<meta\\s+(?:name|property)="' + key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"\\s+content=")([^"]*)(")');
+      var enc = key === 'title' ? escapeText(v) : escapeAttr(v).replace(/&amp;(?=[a-z]+;|#\d+;)/g, '&');
+      if (re.test(src)) src = src.replace(re, function (_, a, __, c) { return a + enc + c; });
+      else fullRewrite = true;
+      if (key === 'title') page.pristine.title = v;
+      else {
+        var m = page.pristine.querySelector('meta[name="' + key + '"], meta[property="' + key + '"]');
+        if (m) m.setAttribute('content', v);
+      }
+    });
+
+    if (fullRewrite && changedOnDisk) {
+      setStatus('This file was changed outside the editor. Copy your edit, click Discard changes to reload, then redo it.', 'err');
+      return;
+    }
+    if (fullRewrite) {
+      // Couldn't find an edited spot verbatim; write the whole document back out instead.
+      var head = page.source.slice(0, page.source.search(/<html[\s>]/i));
+      src = head + page.pristine.documentElement.outerHTML + '\n';
+    }
+
+    try {
+      await writeText(page.path, src);
+    } catch (e) {
+      setStatus('Save failed: ' + e.message, 'err');
+      return;
+    }
+    page.source = src;
+    page.edits.forEach(function (e) {
+      if (e.el.innerHTML !== e.orig) { e.el.innerHTML = e.twin.innerHTML; e.orig = e.el.innerHTML; }
+      e.el.classList.remove('ed-changed');
+    });
+    Object.keys(page.meta).forEach(function (k) {
+      var m = page.meta[k];
+      m.input.value = metaValue(page.pristine, k);
+      m.orig = m.input.value;
+      m.input.classList.remove('changed');
+    });
+    refreshDirty();
+    setStatus('Saved ' + page.path + ' at ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), 'ok');
+  }
+
+  // Test hook: lets an automated check drive the editor with an in-memory folder.
+  window.__editor = { openRoot: openRoot, save: save, state: function () { return page; } };
+})();
+</script>
+</body>
+</html>
